@@ -22,7 +22,7 @@ Netslice uses `systemd-run` to place an application into a dedicated cgroup slic
 
 ### Manual Installation
 ```bash
-git clone https://github.com/yourusername/netslice.git
+git clone https://github.com/occasion-2/netslice.git
 cd netslice
 sudo make install
 ```
