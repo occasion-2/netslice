@@ -1,8 +1,7 @@
 [Unit]
 Description=Netslice Traffic Routing & Marking
 Requires=netslice-anchor.service
-After=network.target netslice-anchor.service sys-subsystem-net-devices-${NETSLICE_TUN_DEV}.device
-BindsTo=sys-subsystem-net-devices-${NETSLICE_TUN_DEV}.device
+After=network.target netslice-anchor.service
 
 [Service]
 Type=oneshot
@@ -28,7 +27,7 @@ ExecStart=-/usr/bin/ip route add default dev ${NETSLICE_TUN_DEV} table ${NETSLIC
 ExecStart=-/usr/bin/ip -6 route add default dev ${NETSLICE_TUN_DEV} table ${NETSLICE_TABLE}
 
 # NFTABLES rule load
-ExecStart=/usr/bin/nft -D SLICE="system.slice/${NETSLICE_SLICE}" -D FWMARK=${NETSLICE_FWMARK} -f /etc/nftables/netslice.nft
+ExecStart=/usr/bin/nft -D SLICE="system.slice/system-netslice.slice" -D FWMARK=${NETSLICE_FWMARK} -f /etc/nftables/netslice.nft
 
 # --- SHUTDOWN ---
 ExecStop=/usr/bin/nft flush chain inet netslice_cgroup output

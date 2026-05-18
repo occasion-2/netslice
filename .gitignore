@@ -1,0 +1,4 @@
+pkg/
+src/
+netslice/
+*.pkg.tar.zst

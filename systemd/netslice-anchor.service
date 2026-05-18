@@ -4,8 +4,8 @@ Before=netslice-routing.service
 
 [Service]
 EnvironmentFile=/etc/netslice.conf
-# This creates /sys/fs/cgroup/system.slice/${NETSLICE_SLICE}
-Slice=${NETSLICE_SLICE}
+# This creates /sys/fs/cgroup/system.slice/system-netslice.slice
+Slice=system-netslice.slice
 ExecStart=/usr/bin/sleep infinity
 
 [Install]

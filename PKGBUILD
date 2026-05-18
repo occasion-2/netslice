@@ -1,5 +1,5 @@
 pkgname=netslice-git
-pkgver=r1.1234567
+pkgver=r1.03d7051
 pkgrel=1
 pkgdesc="Seamless per-application network isolation routing via cgroups, nftables, and bubblewrap"
 arch=('any')
@@ -9,7 +9,7 @@ depends=('bash' 'nftables' 'bubblewrap' 'iproute2' 'systemd')
 makedepends=('git' 'make')
 provides=('netslice')
 conflicts=('netslice')
-source=("git+https://github.com/yourusername/netslice.git")
+source=("git+file:///home/denis/Documents/temp/netslice")
 md5sums=('SKIP')
 backup=('etc/netslice.conf')
 
