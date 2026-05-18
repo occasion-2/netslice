@@ -1,0 +1,10 @@
+# /etc/nftables/netslice.nft
+
+table inet netslice_cgroup {
+    chain output {
+        type route hook output priority mangle; policy accept;
+        
+        # SLICE and FWMARK must be passed via nft -D when applying
+        socket cgroupv2 level 2 $SLICE meta mark set $FWMARK counter
+    }
+}

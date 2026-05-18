@@ -1,0 +1,42 @@
+[Unit]
+Description=Netslice Traffic Routing & Marking
+Requires=netslice-anchor.service
+After=network.target netslice-anchor.service sys-subsystem-net-devices-${NETSLICE_TUN_DEV}.device
+BindsTo=sys-subsystem-net-devices-${NETSLICE_TUN_DEV}.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/netslice.conf
+
+# --- CLEANUP (Silent ignores if not present) ---
+ExecStartPre=-/usr/bin/ip rule del fwmark ${NETSLICE_FWMARK} lookup ${NETSLICE_TABLE}
+ExecStartPre=-/usr/bin/ip -6 rule del fwmark ${NETSLICE_FWMARK} lookup ${NETSLICE_TABLE}
+ExecStartPre=-/usr/bin/ip route del ${NETSLICE_GATEWAY_IP} dev ${NETSLICE_TUN_DEV}
+ExecStartPre=-/usr/bin/ip route flush table ${NETSLICE_TABLE}
+ExecStartPre=-/usr/bin/ip -6 route flush table ${NETSLICE_TABLE}
+ExecStartPre=-/usr/bin/nft flush chain inet netslice_cgroup output
+
+# --- STARTUP ROUTING ---
+# The Hijack Route
+ExecStart=-/usr/bin/ip route add ${NETSLICE_GATEWAY_IP} dev ${NETSLICE_TUN_DEV}
+
+# Policy Routing
+ExecStart=-/usr/bin/ip rule add fwmark ${NETSLICE_FWMARK} lookup ${NETSLICE_TABLE}
+ExecStart=-/usr/bin/ip -6 rule add fwmark ${NETSLICE_FWMARK} lookup ${NETSLICE_TABLE}
+ExecStart=-/usr/bin/ip route add default dev ${NETSLICE_TUN_DEV} table ${NETSLICE_TABLE}
+ExecStart=-/usr/bin/ip -6 route add default dev ${NETSLICE_TUN_DEV} table ${NETSLICE_TABLE}
+
+# NFTABLES rule load
+ExecStart=/usr/bin/nft -D SLICE="system.slice/${NETSLICE_SLICE}" -D FWMARK=${NETSLICE_FWMARK} -f /etc/nftables/netslice.nft
+
+# --- SHUTDOWN ---
+ExecStop=/usr/bin/nft flush chain inet netslice_cgroup output
+ExecStop=-/usr/bin/ip route del ${NETSLICE_GATEWAY_IP} dev ${NETSLICE_TUN_DEV}
+ExecStop=-/usr/bin/ip route flush table ${NETSLICE_TABLE}
+ExecStop=-/usr/bin/ip -6 route flush table ${NETSLICE_TABLE}
+ExecStop=-/usr/bin/ip rule del fwmark ${NETSLICE_FWMARK} lookup ${NETSLICE_TABLE}
+ExecStop=-/usr/bin/ip -6 rule del fwmark ${NETSLICE_FWMARK} lookup ${NETSLICE_TABLE}
+
+[Install]
+WantedBy=multi-user.target

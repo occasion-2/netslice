@@ -1,0 +1,12 @@
+[Unit]
+Description=Netslice Cgroup Anchor (Keeps cgroup alive for nftables)
+Before=netslice-routing.service
+
+[Service]
+EnvironmentFile=/etc/netslice.conf
+# This creates /sys/fs/cgroup/system.slice/${NETSLICE_SLICE}
+Slice=${NETSLICE_SLICE}
+ExecStart=/usr/bin/sleep infinity
+
+[Install]
+WantedBy=multi-user.target

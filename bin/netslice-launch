@@ -1,0 +1,34 @@
+#!/bin/bash
+# Usage: netslice-launch <command> [args...]
+
+# Read Configuration (fallback to defaults if missing)
+if [ -f /etc/netslice.conf ]; then
+    source /etc/netslice.conf
+else
+    NETSLICE_SLICE="netslice.slice"
+fi
+
+# 1. Capture User Details
+USER_ID=$(id -u)
+GROUP_ID=$(id -g)
+
+# 2. Capture Critical Wayland/XDG Paths
+RUNTIME_DIR="/run/user/$USER_ID"
+
+# 3. Execute with Systemd and Bubblewrap
+exec sudo systemd-run \
+    --description="Netslice Proxied App" \
+    --slice="$NETSLICE_SLICE" \
+    --scope \
+    --uid="$USER_ID" \
+    --gid="$GROUP_ID" \
+    --setenv=DISPLAY="$DISPLAY" \
+    --setenv=WAYLAND_DISPLAY="$WAYLAND_DISPLAY" \
+    --setenv=XAUTHORITY="$XAUTHORITY" \
+    --setenv=XDG_RUNTIME_DIR="$RUNTIME_DIR" \
+    --setenv=XDG_SESSION_TYPE="$XDG_SESSION_TYPE" \
+    --setenv=XDG_CURRENT_DESKTOP="$XDG_CURRENT_DESKTOP" \
+    --setenv=DBUS_SESSION_BUS_ADDRESS="unix:path=$RUNTIME_DIR/bus" \
+    --setenv=ELECTRON_OZONE_PLATFORM_HINT="auto" \
+    -- \
+    bwrap --dev-bind / / -- "$@"
