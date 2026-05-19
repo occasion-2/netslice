@@ -6,11 +6,25 @@ all:
 	@echo "Run 'make install' to install netslice."
 
 install:
-	install -Dm755 bin/netslice-launch $(DESTDIR)$(PREFIX)/bin/netslice-launch
+	mkdir -p $(DESTDIR)$(PREFIX)/bin
+	mkdir -p $(DESTDIR)$(SYSCONFDIR)/nftables
+	mkdir -p $(DESTDIR)$(SYSTEMDDIR)
+	
+	sed "s|@@SYSCONFDIR@@|$(SYSCONFDIR)|g" bin/netslice-launch > bin/netslice-launch.inst
+	install -Dm755 bin/netslice-launch.inst $(DESTDIR)$(PREFIX)/bin/netslice-launch
+	rm bin/netslice-launch.inst
+	
 	install -Dm644 configs/netslice.conf $(DESTDIR)$(SYSCONFDIR)/netslice.conf
 	install -Dm644 nftables/netslice.nft $(DESTDIR)$(SYSCONFDIR)/nftables/netslice.nft
-	install -Dm644 systemd/netslice-anchor.service $(DESTDIR)$(SYSTEMDDIR)/netslice-anchor.service
-	install -Dm644 systemd/netslice-routing.service $(DESTDIR)$(SYSTEMDDIR)/netslice-routing.service
+	
+	sed "s|@@SYSCONFDIR@@|$(SYSCONFDIR)|g" systemd/netslice-anchor.service > systemd/netslice-anchor.service.inst
+	install -Dm644 systemd/netslice-anchor.service.inst $(DESTDIR)$(SYSTEMDDIR)/netslice-anchor.service
+	rm systemd/netslice-anchor.service.inst
+	
+	sed "s|@@SYSCONFDIR@@|$(SYSCONFDIR)|g" systemd/netslice-routing.service > systemd/netslice-routing.service.inst
+	install -Dm644 systemd/netslice-routing.service.inst $(DESTDIR)$(SYSTEMDDIR)/netslice-routing.service
+	rm systemd/netslice-routing.service.inst
+
 	@echo ""
 	@echo "Installation complete."
 	@echo "Please edit $(DESTDIR)$(SYSCONFDIR)/netslice.conf to match your proxy setup."

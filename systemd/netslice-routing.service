@@ -6,7 +6,7 @@ After=network.target netslice-anchor.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-EnvironmentFile=/etc/netslice.conf
+EnvironmentFile=@@SYSCONFDIR@@/netslice.conf
 
 # --- CLEANUP (Silent ignores if not present) ---
 ExecStartPre=-/usr/bin/ip rule del fwmark ${NETSLICE_FWMARK} lookup ${NETSLICE_TABLE}
@@ -27,7 +27,10 @@ ExecStart=-/usr/bin/ip route add default dev ${NETSLICE_TUN_DEV} table ${NETSLIC
 ExecStart=-/usr/bin/ip -6 route add default dev ${NETSLICE_TUN_DEV} table ${NETSLICE_TABLE}
 
 # NFTABLES rule load
-ExecStart=/usr/bin/nft -D SLICE="system.slice/system-netslice.slice" -D FWMARK=${NETSLICE_FWMARK} -f /etc/nftables/netslice.nft
+# We use system.slice/${NETSLICE_SLICE} as the default path for systemd-run --slice
+ExecStart=/usr/bin/bash -c '\
+    SLICE_PATH="system.slice/${NETSLICE_SLICE}"; \
+    /usr/bin/nft -D SLICE_PATH="$SLICE_PATH" -D FWMARK=${NETSLICE_FWMARK} -f @@SYSCONFDIR@@/nftables/netslice.nft'
 
 # --- SHUTDOWN ---
 ExecStop=/usr/bin/nft flush chain inet netslice_cgroup output

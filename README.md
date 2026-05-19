@@ -28,12 +28,16 @@ sudo make install
 ```
 
 ## Configuration
-Edit `/etc/netslice.conf` to match your proxy's TUN interface and gateway IP.
+Edit `/etc/netslice.conf` (or your custom `SYSCONFDIR/netslice.conf`) to match your proxy's TUN interface and gateway IP.
 
 ```ini
 NETSLICE_TUN_DEV="tun0"
 NETSLICE_GATEWAY_IP="10.255.255.1"
 ```
+
+> [!TIP]
+> **Advanced Configuration:** If you change `NETSLICE_SLICE` in the config, you must also update the `Slice=` directive in `netslice-anchor.service` to match. You can do this with:
+> `sudo systemctl edit netslice-anchor.service`
 
 ## Usage
 Start the routing service:

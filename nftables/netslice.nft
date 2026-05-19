@@ -4,7 +4,8 @@ table inet netslice_cgroup {
     chain output {
         type route hook output priority mangle; policy accept;
         
-        # SLICE and FWMARK must be passed via nft -D when applying
-        socket cgroupv2 level 2 $SLICE meta mark set $FWMARK counter
+        # SLICE_PATH and FWMARK must be passed via nft -D when applying
+        # SLICE_PATH is typically "system.slice/NAME" (level 2)
+        socket cgroupv2 level 2 $SLICE_PATH meta mark set $FWMARK counter
     }
 }

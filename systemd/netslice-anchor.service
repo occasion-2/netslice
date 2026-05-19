@@ -3,7 +3,7 @@ Description=Netslice Cgroup Anchor (Keeps cgroup alive for nftables)
 Before=netslice-routing.service
 
 [Service]
-EnvironmentFile=/etc/netslice.conf
+EnvironmentFile=@@SYSCONFDIR@@/netslice.conf
 # This creates /sys/fs/cgroup/system.slice/system-netslice.slice
 Slice=system-netslice.slice
 ExecStart=/usr/bin/sleep infinity
