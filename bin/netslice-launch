@@ -18,16 +18,15 @@ GROUP_ID=$(id -g)
 RUNTIME_DIR="/run/user/$USER_ID"
 
 # 3. Build Environment Arguments
-ENV_ARGS=(
-    --setenv DISPLAY "$DISPLAY"
-    --setenv WAYLAND_DISPLAY "$WAYLAND_DISPLAY"
-    --setenv XAUTHORITY "$XAUTHORITY"
-    --setenv XDG_RUNTIME_DIR "$RUNTIME_DIR"
-    --setenv XDG_SESSION_TYPE "$XDG_SESSION_TYPE"
-    --setenv XDG_CURRENT_DESKTOP "$XDG_CURRENT_DESKTOP"
-    --setenv DBUS_SESSION_BUS_ADDRESS "unix:path=$RUNTIME_DIR/bus"
-    --setenv ELECTRON_OZONE_PLATFORM_HINT "auto"
-)
+ENV_ARGS=()
+[ -n "$DISPLAY" ] && ENV_ARGS+=("--setenv=DISPLAY=$DISPLAY")
+[ -n "$WAYLAND_DISPLAY" ] && ENV_ARGS+=("--setenv=WAYLAND_DISPLAY=$WAYLAND_DISPLAY")
+[ -n "$XAUTHORITY" ] && ENV_ARGS+=("--setenv=XAUTHORITY=$XAUTHORITY")
+[ -n "$XDG_RUNTIME_DIR" ] && ENV_ARGS+=("--setenv=XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR")
+[ -n "$XDG_SESSION_TYPE" ] && ENV_ARGS+=("--setenv=XDG_SESSION_TYPE=$XDG_SESSION_TYPE")
+[ -n "$XDG_CURRENT_DESKTOP" ] && ENV_ARGS+=("--setenv=XDG_CURRENT_DESKTOP=$XDG_CURRENT_DESKTOP")
+ENV_ARGS+=("--setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=$RUNTIME_DIR/bus")
+ENV_ARGS+=("--setenv=ELECTRON_OZONE_PLATFORM_HINT=auto")
 
 # 4. Execute with Systemd and Bubblewrap
 exec sudo systemd-run \
