@@ -8,6 +8,10 @@ Type=oneshot
 RemainAfterExit=yes
 EnvironmentFile=@@SYSCONFDIR@@/netslice.conf
 
+# --- WAIT FOR TUN DEVICE ---
+# Ждем появления интерфейса. Если прокси упал, systemd прервет это по таймауту (TimeoutStartSec, по дефолту 90 сек)
+ExecStartPre=/usr/bin/bash -c 'while ! /usr/bin/ip link show dev "${NETSLICE_TUN_DEV}" >/dev/null 2>&1; do sleep 1; done'
+
 # --- CLEANUP (Silent ignores if not present) ---
 ExecStartPre=-/usr/bin/ip rule del fwmark ${NETSLICE_FWMARK} lookup ${NETSLICE_TABLE}
 ExecStartPre=-/usr/bin/ip -6 rule del fwmark ${NETSLICE_FWMARK} lookup ${NETSLICE_TABLE}
@@ -27,7 +31,6 @@ ExecStart=-/usr/bin/ip route add default dev ${NETSLICE_TUN_DEV} table ${NETSLIC
 ExecStart=-/usr/bin/ip -6 route add default dev ${NETSLICE_TUN_DEV} table ${NETSLICE_TABLE}
 
 # NFTABLES rule load
-# We use system.slice/${NETSLICE_SLICE} as the default path for systemd-run --slice
 ExecStart=/usr/bin/bash -c '\
     SLICE_PATH="system.slice/${NETSLICE_SLICE}"; \
     /usr/bin/nft -D SLICE_PATH="$SLICE_PATH" -D FWMARK=${NETSLICE_FWMARK} -f @@SYSCONFDIR@@/nftables/netslice.nft'
