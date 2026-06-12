@@ -33,7 +33,7 @@ ExecStart=-/usr/bin/ip -6 route add default dev ${NETSLICE_TUN_DEV} table ${NETS
 # NFTABLES rule load
 ExecStart=/usr/bin/bash -c '\
     SLICE_PATH="system.slice/${NETSLICE_SLICE}"; \
-    /usr/bin/nft -D SLICE_PATH="$SLICE_PATH" -D FWMARK=${NETSLICE_FWMARK} -f @@SYSCONFDIR@@/nftables/netslice.nft'
+    /usr/bin/nft -D SLICE_PATH="$SLICE_PATH" -D FWMARK=${NETSLICE_FWMARK} -D TUN_DEV=${NETSLICE_TUN_DEV} -f @@SYSCONFDIR@@/nftables/netslice.nft'
 
 # --- SHUTDOWN ---
 ExecStop=/usr/bin/nft flush chain inet netslice_cgroup output

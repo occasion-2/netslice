@@ -1,19 +1,23 @@
 # Netslice
 
-Seamless, per-application split-tunneling for Linux. Routes specific GUI apps through a TUN interface using cgroups and nftables, while keeping Wayland and D-Bus fully intact via `bubblewrap`.
+Seamless, hardened per-application split-tunneling for Linux. Netslice routes specific GUI applications through a TUN interface using cgroups and nftables, while utilizing bubblewrap to completely quarantine the application from host telemetry, hardware fingerprints, and state leaks.
 
 ## The Problem
-Traditional network namespaces break Wayland GUI applications by blocking socket access to the display server and D-Bus. Existing cgroup routing solutions often face similar IPC isolation issues.
+Traditional network namespaces break Wayland GUI applications by blocking socket access to the display server. While standard cgroup routing fixes the GUI issue, it leaves massive security and privacy gaps: advanced AI tools, compiled Electron binaries, and aggressive tracking systems bypass basic routing by utilizing IPv6 fallbacks, UDP QUIC blasts, or querying real-world hardware states directly via D-Bus and system locale files.
 
 ## The Solution
-Netslice uses `systemd-run` to place an application into a dedicated cgroup slice for network isolation. Crucially, it layers `bubblewrap` (bwrap) on top to explicitly bind-mount the host's `/` and pass through necessary Wayland, X11, and D-Bus sockets. `nftables` then marks the cgroup's traffic, and `iproute2` routes it through your proxy's TUN interface.
+Netslice creates a mathematically proven quarantine cell using a two-pronged approach:
+
+1. The Telemetry Gag (bwrap): Netslice launches the application using systemd-run and layers bubblewrap on top. It explicitly bind-mounts Wayland/X11 sockets so the GUI renders perfectly, but violently severs the IPC/D-Bus namespace, nullifies /etc/machine-id, and spoofs the system timezone. The application boots into a completely sterile, untainted state.
+
+2. The Network Kill-Switch (nftables): Traffic from the isolated cgroup is marked and routed directly into your proxy's TUN interface. A strict nftables filter acts as a kill-switch: if the application attempts to bypass the TUN using an unhandled protocol (like IPv6 or raw UDP), the packet is instantly dropped before it can reach your physical network adapter. 
 
 ## Prerequisites
-- `systemd`
-- `nftables`
-- `bubblewrap`
-- `iproute2`
-- A proxy client that provides a TUN interface (e.g., Xray, Sing-box, Clash, WireGuard)
+- systemd
+- nftables
+- bubblewrap
+- iproute2
+- A proxy client that provides a TUN interface and FakeDNS capabilities (e.g., Xray, Sing-box).
 
 ## Installation
 
@@ -21,31 +25,29 @@ Netslice uses `systemd-run` to place an application into a dedicated cgroup slic
 *(Coming soon)*
 
 ### Manual Installation
-```bash
+
 git clone https://github.com/occasion-2/netslice.git
 cd netslice
 sudo make install
-```
 
 ## Configuration
-Edit `/etc/netslice.conf` (or your custom `SYSCONFDIR/netslice.conf`) to match your proxy's TUN interface and gateway IP.
+Edit /etc/netslice.conf (or your custom SYSCONFDIR/netslice.conf) to match your proxy's TUN interface, routing mark, and gateway IP.
 
-```ini
-NETSLICE_TUN_DEV="tun0"
+NETSLICE_TUN_DEV="xray_tun"
 NETSLICE_GATEWAY_IP="10.255.255.1"
-```
+NETSLICE_FWMARK="0x100"
+NETSLICE_TABLE="100"
 
-> [!TIP]
-> **Advanced Configuration:** If you change `NETSLICE_SLICE` in the config, you must also update the `Slice=` directive in `netslice-anchor.service` to match. You can do this with:
-> `sudo systemctl edit netslice-anchor.service`
+Advanced Configuration: If you change NETSLICE_SLICE in the config, you must also update the Slice= directive in netslice-anchor.service to match. You can do this with:
+sudo systemctl edit netslice-anchor.service
 
 ## Usage
-Start the routing service:
-```bash
-sudo systemctl enable --now netslice-routing.service
-```
+Start the routing and quarantine service:
 
-Launch an application through the proxy:
-```bash
+sudo systemctl enable --now netslice-routing.service
+
+Launch any application straight into the quarantine cell:
+
+netslice-launch antigravity-ide
+# or
 netslice-launch firefox
-```

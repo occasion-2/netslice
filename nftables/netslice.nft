@@ -1,11 +1,18 @@
 # /etc/nftables/netslice.nft
 
 table inet netslice_cgroup {
-    chain output {
+    chain mangle_out {
         type route hook output priority mangle; policy accept;
         
-        # SLICE_PATH and FWMARK must be passed via nft -D when applying
-        # SLICE_PATH is typically "system.slice/NAME" (level 2)
+        # Mark packets from the slice for the routing table
         socket cgroupv2 level 2 $SLICE_PATH meta mark set $FWMARK counter
+    }
+
+    chain filter_out {
+        type filter hook output priority filter; policy accept;
+        
+        # THE KILL-SWITCH: If it is from our cgroup but NOT exiting via the TUN, drop it.
+        # This completely stops IPv6, QUIC, or DNS leaks from hitting your physical NIC.
+        socket cgroupv2 level 2 $SLICE_PATH oifname != $TUN_DEV counter drop
     }
 }

@@ -1,7 +1,6 @@
 #!/bin/bash
 # Usage: netslice-launch <command> [args...]
 
-# Read Configuration (fallback to defaults if missing)
 CONFIG_FILE="@@SYSCONFDIR@@/netslice.conf"
 if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
@@ -10,11 +9,8 @@ elif [ -f "/etc/netslice.conf" ]; then
 fi
 : "${NETSLICE_SLICE:=system-netslice.slice}"
 
-# 1. Capture User Details
 USER_ID=$(id -u)
 GROUP_ID=$(id -g)
-
-# 2. Capture Critical Wayland/XDG Paths
 RUNTIME_DIR="/run/user/$USER_ID"
 
 # 3. Build Environment Arguments
@@ -25,8 +21,17 @@ ENV_ARGS=()
 [ -n "$XDG_RUNTIME_DIR" ] && ENV_ARGS+=("--setenv=XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR")
 [ -n "$XDG_SESSION_TYPE" ] && ENV_ARGS+=("--setenv=XDG_SESSION_TYPE=$XDG_SESSION_TYPE")
 [ -n "$XDG_CURRENT_DESKTOP" ] && ENV_ARGS+=("--setenv=XDG_CURRENT_DESKTOP=$XDG_CURRENT_DESKTOP")
-ENV_ARGS+=("--setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=$RUNTIME_DIR/bus")
+
+# Force Wayland optimizations and US localization
 ENV_ARGS+=("--setenv=ELECTRON_OZONE_PLATFORM_HINT=auto")
+ENV_ARGS+=("--setenv=TZ=America/New_York")
+ENV_ARGS+=("--setenv=LANG=en_US.UTF-8")
+
+# Force Xray Proxy fallbacks natively
+ENV_ARGS+=("--setenv=HTTP_PROXY=http://127.0.0.1:10808")
+ENV_ARGS+=("--setenv=HTTPS_PROXY=http://127.0.0.1:10808")
+
+# IMPORTANT: Notice DBUS_SESSION_BUS_ADDRESS is intentionally missing
 
 # 4. Execute with Systemd and Bubblewrap
 exec sudo systemd-run \
@@ -37,4 +42,10 @@ exec sudo systemd-run \
     --gid="$GROUP_ID" \
     "${ENV_ARGS[@]}" \
     -- \
-    bwrap --dev-bind / / --die-with-parent -- "$@"
+    bwrap \
+    --dev-bind / / \
+    --unshare-ipc \
+    --ro-bind /usr/share/zoneinfo/America/New_York /etc/localtime \
+    --ro-bind /dev/null /etc/machine-id \
+    --ro-bind /dev/null "$RUNTIME_DIR/bus" \
+    --die-with-parent -- "$@"
