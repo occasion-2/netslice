@@ -1,7 +1,50 @@
 #!/bin/bash
-# Usage: netslice-launch <command> [args...]
+# Usage: netslice-launch [--allow_dbus] [--] <command> [args...]
 
 set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: netslice-launch [--allow_dbus] [--] <command> [args...]
+
+Options:
+  --allow_dbus  Allow access to the host user session D-Bus.
+  -h, --help    Show this help message.
+EOF
+}
+
+ALLOW_DBUS=0
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --allow_dbus)
+            ALLOW_DBUS=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            printf 'netslice-launch: unknown option: %s\n' "$1" >&2
+            usage >&2
+            exit 2
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if [ "$#" -eq 0 ]; then
+    printf 'netslice-launch: missing command\n' >&2
+    usage >&2
+    exit 2
+fi
 
 CONFIG_FILE="@@SYSCONFDIR@@/netslice.conf"
 
@@ -67,9 +110,19 @@ done
 # Transparent cgroup/TUN routing should also work independently.
 PROXY_URL="http://${NETSLICE_PROXY_HOST}:${NETSLICE_PROXY_PORT}"
 
-# Do not intentionally pass DBUS_SESSION_BUS_ADDRESS.
-# Also do not mount /dev/null over the D-Bus socket; that can break extensions.
-# If D-Bus isolation is needed later, use a real private dbus-run-session as a separate mode.
+# Hide the host user session bus unless access was explicitly requested. Set
+# the opt-in environment inside bwrap so it cannot be lost at the sudo/systemd
+# boundary.
+BWRAP_DBUS_ARGS=(
+    --unsetenv DBUS_SESSION_BUS_ADDRESS
+    --ro-bind /dev/null "$RUNTIME_DIR/bus"
+)
+if [ "$ALLOW_DBUS" -eq 1 ]; then
+    BWRAP_DBUS_ARGS=(
+        --setenv XDG_RUNTIME_DIR "$RUNTIME_DIR"
+        --setenv DBUS_SESSION_BUS_ADDRESS "unix:path=$RUNTIME_DIR/bus"
+    )
+fi
 
 exec sudo systemd-run \
     --description="Netslice Proxied App" \
@@ -83,5 +136,6 @@ exec sudo systemd-run \
     --dev-bind / / \
     --ro-bind /usr/share/zoneinfo/"$NETSLICE_TZ" /etc/localtime \
     --ro-bind "$FAKE_MACHINE_ID_FILE" /etc/machine-id \
+    "${BWRAP_DBUS_ARGS[@]}" \
     --die-with-parent \
     -- "$@"

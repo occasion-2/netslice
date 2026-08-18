@@ -10,7 +10,7 @@ Netslice creates a mathematically proven quarantine cell using a two-pronged app
 
 1. The Telemetry Gag (bwrap): Netslice launches the application using systemd-run and layers bubblewrap on top. It explicitly bind-mounts Wayland/X11 sockets so the GUI renders perfectly, but violently severs the IPC/D-Bus namespace, nullifies /etc/machine-id, and spoofs the system timezone. The application boots into a completely sterile, untainted state.
 
-2. The Network Kill-Switch (nftables): Traffic from the isolated cgroup is marked and routed directly into your proxy's TUN interface. A strict nftables filter acts as a kill-switch: if the application attempts to bypass the TUN using an unhandled protocol (like IPv6 or raw UDP), the packet is instantly dropped before it can reach your physical network adapter. 
+2. The Network Kill-Switch (nftables): Traffic from the isolated cgroup is marked and routed directly into your proxy's TUN interface. A strict nftables filter acts as a kill-switch: if the application attempts to bypass the TUN using an unhandled protocol (like IPv6 or raw UDP), the packet is instantly dropped before it can reach your physical network adapter.
 
 ## Prerequisites
 - systemd
@@ -51,3 +51,11 @@ Launch any application straight into the quarantine cell:
 netslice-launch antigravity-ide
 # or
 netslice-launch firefox
+
+Host user session D-Bus access is blocked by default. Applications that require
+it, such as Spotify, can be granted access explicitly:
+
+netslice-launch --allow_dbus spotify-launcher
+
+`--allow_dbus` exposes the user session-bus socket and its address to the
+application, reducing isolation for that application only.
