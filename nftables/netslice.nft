@@ -1,18 +1,24 @@
 # /etc/nftables/netslice.nft
 
+table inet netslice_cgroup
+flush table inet netslice_cgroup
+
 table inet netslice_cgroup {
-    chain mangle_out {
+    chain mark_out {
         type route hook output priority mangle; policy accept;
-        
-        # Mark packets from the slice for the routing table
+
+        # Never mark localhost/proxy/internal IDE traffic.
+        oifname "lo" accept
+
+        # Mark everything from the netslice cgroup.
         socket cgroupv2 level 2 $SLICE_PATH meta mark set $FWMARK counter
     }
 
-    chain filter_out {
-        type filter hook output priority filter; policy accept;
-        
-        # THE KILL-SWITCH: If it is from our cgroup but NOT exiting via the TUN, drop it.
-        # This completely stops IPv6, QUIC, or DNS leaks from hitting your physical NIC.
-        socket cgroupv2 level 2 $SLICE_PATH oifname != $TUN_DEV counter drop
+    chain kill_post {
+        type filter hook postrouting priority filter; policy accept;
+
+        # After policy routing has happened, kill marked packets
+        # that still try to leave outside the TUN.
+        meta mark $FWMARK oifname != $TUN_DEV counter drop
     }
 }

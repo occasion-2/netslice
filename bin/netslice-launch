@@ -1,39 +1,76 @@
 #!/bin/bash
 # Usage: netslice-launch <command> [args...]
 
+set -euo pipefail
+
 CONFIG_FILE="@@SYSCONFDIR@@/netslice.conf"
+
 if [ -f "$CONFIG_FILE" ]; then
+    # shellcheck disable=SC1090
     source "$CONFIG_FILE"
 elif [ -f "/etc/netslice.conf" ]; then
+    # shellcheck disable=SC1091
     source "/etc/netslice.conf"
 fi
-: "${NETSLICE_SLICE:=system-netslice.slice}"
 
-USER_ID=$(id -u)
-GROUP_ID=$(id -g)
+: "${NETSLICE_SLICE:=system-netslice.slice}"
+: "${NETSLICE_PROXY_HOST:=127.0.0.1}"
+: "${NETSLICE_PROXY_PORT:=10808}"
+: "${NETSLICE_TZ:=America/New_York}"
+: "${NETSLICE_LANG:=en_US.UTF-8}"
+
+USER_ID="$(id -u)"
+GROUP_ID="$(id -g)"
 RUNTIME_DIR="/run/user/$USER_ID"
 
-# 3. Build Environment Arguments
+# Persistent fake machine-id.
+# Do NOT bind /dev/null to /etc/machine-id; Electron may use machine-id-derived storage.
+FAKE_CONFIG_DIR="$HOME/.config/netslice"
+FAKE_MACHINE_ID_FILE="$FAKE_CONFIG_DIR/fake-machine-id"
+
+mkdir -p "$FAKE_CONFIG_DIR"
+
+if [ ! -f "$FAKE_MACHINE_ID_FILE" ]; then
+    openssl rand -hex 16 > "$FAKE_MACHINE_ID_FILE"
+    chmod 600 "$FAKE_MACHINE_ID_FILE"
+fi
+
+# Build systemd environment arguments.
 ENV_ARGS=()
-[ -n "$DISPLAY" ] && ENV_ARGS+=("--setenv=DISPLAY=$DISPLAY")
-[ -n "$WAYLAND_DISPLAY" ] && ENV_ARGS+=("--setenv=WAYLAND_DISPLAY=$WAYLAND_DISPLAY")
-[ -n "$XAUTHORITY" ] && ENV_ARGS+=("--setenv=XAUTHORITY=$XAUTHORITY")
-[ -n "$XDG_RUNTIME_DIR" ] && ENV_ARGS+=("--setenv=XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR")
-[ -n "$XDG_SESSION_TYPE" ] && ENV_ARGS+=("--setenv=XDG_SESSION_TYPE=$XDG_SESSION_TYPE")
-[ -n "$XDG_CURRENT_DESKTOP" ] && ENV_ARGS+=("--setenv=XDG_CURRENT_DESKTOP=$XDG_CURRENT_DESKTOP")
 
-# Force Wayland optimizations and US localization
+[ -n "${DISPLAY:-}" ] && ENV_ARGS+=("--setenv=DISPLAY=$DISPLAY")
+[ -n "${WAYLAND_DISPLAY:-}" ] && ENV_ARGS+=("--setenv=WAYLAND_DISPLAY=$WAYLAND_DISPLAY")
+[ -n "${XAUTHORITY:-}" ] && ENV_ARGS+=("--setenv=XAUTHORITY=$XAUTHORITY")
+[ -n "${XDG_RUNTIME_DIR:-}" ] && ENV_ARGS+=("--setenv=XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR")
+[ -n "${XDG_SESSION_TYPE:-}" ] && ENV_ARGS+=("--setenv=XDG_SESSION_TYPE=$XDG_SESSION_TYPE")
+[ -n "${XDG_CURRENT_DESKTOP:-}" ] && ENV_ARGS+=("--setenv=XDG_CURRENT_DESKTOP=$XDG_CURRENT_DESKTOP")
+[ -n "${DESKTOP_SESSION:-}" ] && ENV_ARGS+=("--setenv=DESKTOP_SESSION=$DESKTOP_SESSION")
+
+# Electron / Chromium hints.
 ENV_ARGS+=("--setenv=ELECTRON_OZONE_PLATFORM_HINT=auto")
-ENV_ARGS+=("--setenv=TZ=America/New_York")
-ENV_ARGS+=("--setenv=LANG=en_US.UTF-8")
+ENV_ARGS+=("--setenv=TZ=$NETSLICE_TZ")
+#ENV_ARGS+=("--setenv=LANG=$NETSLICE_LANG")
 
-# Force Xray Proxy fallbacks natively
-ENV_ARGS+=("--setenv=HTTP_PROXY=http://127.0.0.1:10808")
-ENV_ARGS+=("--setenv=HTTPS_PROXY=http://127.0.0.1:10808")
+# Preserve basic user/session env needed by Electron, SSH, askpass, shells.
+for v in \
+    HOME USER LOGNAME PATH SHELL \
+    TERM COLORTERM \
+    LANG LC_ALL LC_CTYPE \
+    SSH_AUTH_SOCK SSH_AGENT_PID \
+    XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME XDG_DATA_DIRS; do
+    if [ -n "${!v:-}" ]; then
+        ENV_ARGS+=("--setenv=$v=${!v}")
+    fi
+done
 
-# IMPORTANT: Notice DBUS_SESSION_BUS_ADDRESS is intentionally missing
+# Proxy fallback for apps/components that honor env proxies.
+# Transparent cgroup/TUN routing should also work independently.
+PROXY_URL="http://${NETSLICE_PROXY_HOST}:${NETSLICE_PROXY_PORT}"
 
-# 4. Execute with Systemd and Bubblewrap
+# Do not intentionally pass DBUS_SESSION_BUS_ADDRESS.
+# Also do not mount /dev/null over the D-Bus socket; that can break extensions.
+# If D-Bus isolation is needed later, use a real private dbus-run-session as a separate mode.
+
 exec sudo systemd-run \
     --description="Netslice Proxied App" \
     --slice="$NETSLICE_SLICE" \
@@ -44,8 +81,7 @@ exec sudo systemd-run \
     -- \
     bwrap \
     --dev-bind / / \
-    --unshare-ipc \
-    --ro-bind /usr/share/zoneinfo/America/New_York /etc/localtime \
-    --ro-bind /dev/null /etc/machine-id \
-    --ro-bind /dev/null "$RUNTIME_DIR/bus" \
-    --die-with-parent -- "$@"
+    --ro-bind /usr/share/zoneinfo/"$NETSLICE_TZ" /etc/localtime \
+    --ro-bind "$FAKE_MACHINE_ID_FILE" /etc/machine-id \
+    --die-with-parent \
+    -- "$@"
