@@ -66,6 +66,11 @@ USER_ID="$(id -u)"
 GROUP_ID="$(id -g)"
 RUNTIME_DIR="/run/user/$USER_ID"
 
+# Bubblewrap refuses to mount directly on /etc/localtime when it is a symlink.
+# Bind the fake timezone over the symlink's resolved regular-file target instead.
+LOCALTIME_TARGET="$(readlink -f /etc/localtime)"
+NETSLICE_TZ_FILE="$(readlink -f "/usr/share/zoneinfo/$NETSLICE_TZ")"
+
 # Persistent fake machine-id.
 # Do NOT bind /dev/null to /etc/machine-id; Electron may use machine-id-derived storage.
 FAKE_CONFIG_DIR="$HOME/.config/netslice"
@@ -92,7 +97,7 @@ ENV_ARGS=()
 # Electron / Chromium hints.
 ENV_ARGS+=("--setenv=ELECTRON_OZONE_PLATFORM_HINT=auto")
 ENV_ARGS+=("--setenv=TZ=$NETSLICE_TZ")
-#ENV_ARGS+=("--setenv=LANG=$NETSLICE_LANG")
+# ENV_ARGS+=("--setenv=LANG=$NETSLICE_LANG")
 
 # Preserve basic user/session env needed by Electron, SSH, askpass, shells.
 for v in \
@@ -106,7 +111,7 @@ for v in \
     fi
 done
 
-# Proxy fallback for apps/components that honor env proxies.
+# Proxy fallback for apps/components that honor environment proxies.
 # Transparent cgroup/TUN routing should also work independently.
 PROXY_URL="http://${NETSLICE_PROXY_HOST}:${NETSLICE_PROXY_PORT}"
 
@@ -134,7 +139,7 @@ exec sudo systemd-run \
     -- \
     bwrap \
     --dev-bind / / \
-    --ro-bind /usr/share/zoneinfo/"$NETSLICE_TZ" /etc/localtime \
+    --ro-bind "$NETSLICE_TZ_FILE" "$LOCALTIME_TARGET" \
     --ro-bind "$FAKE_MACHINE_ID_FILE" /etc/machine-id \
     "${BWRAP_DBUS_ARGS[@]}" \
     --die-with-parent \
