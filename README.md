@@ -59,3 +59,55 @@ netslice-launch --allow_dbus spotify-launcher
 
 `--allow_dbus` exposes the user session-bus socket and its address to the
 application, reducing isolation for that application only.
+
+
+### Routing-only mode
+
+For applications that need host access or administrator commands, explicitly opt
+out of Bubblewrap while retaining the configured cgroup routing:
+
+```bash
+netslice-launch --routing-only codex-desktop
+# Codex CLI (these permission flags belong to the CLI):
+netslice-launch --routing-only codex --sandbox workspace-write --ask-for-approval on-request
+```
+
+This mode uses the same systemd slice, invoking user/group, and existing
+nftables/TUN rules. It does not hide the host session D-Bus socket, replace the
+machine ID, or spoof the timezone, and does not require Bubblewrap or create a
+fake machine ID. `--allow_dbus` is redundant when combined with `--routing-only`.
+Put Netslice options before the application name; arguments after it are passed
+unchanged to the application.
+
+The application still runs as your normal user. Routing-only mode does not grant
+root access or clear restrictions inherited from its parent. Launch it from a
+normal host terminal. `sudo` still requires your normal authorization, and an
+application's own sandbox or approval policy can still prevent escalation.
+Commands delegated to services outside the Netslice cgroup are not covered by
+its routing rules. The default Bubblewrap mode is unchanged.
+
+After updating an existing installation, install only the launcher to preserve
+your current routing configuration (default `/usr/local` installation):
+
+```bash
+netslice_tmp=$(mktemp)
+sed 's|@@SYSCONFDIR@@|/etc|g' bin/netslice-launch > "$netslice_tmp"
+sudo install -m755 "$netslice_tmp" /usr/local/bin/netslice-launch
+rm "$netslice_tmp"
+```
+
+Fully quit an existing application instance before relaunching in the new mode.
+To inspect the outer launch environment independently of an application sandbox:
+
+```bash
+netslice-launch --routing-only sh -c 'grep NoNewPrivs /proc/self/status; id; cat /proc/self/cgroup'
+```
+
+From an unrestricted host shell, expect `NoNewPrivs: 0`, your normal user ID,
+and membership in the configured Netslice slice. An application may add its own
+restrictions later.
+
+### Launcher tests
+
+Run `python3 -m unittest discover -s tests -v`. These tests capture the launcher
+arguments using a fake `sudo`; they require no root access or running services.

@@ -1,22 +1,28 @@
 #!/bin/bash
-# Usage: netslice-launch [--allow_dbus] [--] <command> [args...]
+# Usage: netslice-launch [--routing-only] [--allow_dbus] [--] <command> [args...]
 
 set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: netslice-launch [--allow_dbus] [--] <command> [args...]
+Usage: netslice-launch [--routing-only] [--allow_dbus] [--] <command> [args...]
 
 Options:
+  --routing-only  Use cgroup routing without Bubblewrap isolation.
   --allow_dbus  Allow access to the host user session D-Bus.
   -h, --help    Show this help message.
 EOF
 }
 
 ALLOW_DBUS=0
+ROUTING_ONLY=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        --routing-only)
+            ROUTING_ONLY=1
+            shift
+            ;;
         --allow_dbus)
             ALLOW_DBUS=1
             shift
@@ -66,23 +72,6 @@ USER_ID="$(id -u)"
 GROUP_ID="$(id -g)"
 RUNTIME_DIR="/run/user/$USER_ID"
 
-# Bubblewrap refuses to mount directly on /etc/localtime when it is a symlink.
-# Bind the fake timezone over the symlink's resolved regular-file target instead.
-LOCALTIME_TARGET="$(readlink -f /etc/localtime)"
-NETSLICE_TZ_FILE="$(readlink -f "/usr/share/zoneinfo/$NETSLICE_TZ")"
-
-# Persistent fake machine-id.
-# Do NOT bind /dev/null to /etc/machine-id; Electron may use machine-id-derived storage.
-FAKE_CONFIG_DIR="$HOME/.config/netslice"
-FAKE_MACHINE_ID_FILE="$FAKE_CONFIG_DIR/fake-machine-id"
-
-mkdir -p "$FAKE_CONFIG_DIR"
-
-if [ ! -f "$FAKE_MACHINE_ID_FILE" ]; then
-    openssl rand -hex 16 > "$FAKE_MACHINE_ID_FILE"
-    chmod 600 "$FAKE_MACHINE_ID_FILE"
-fi
-
 # Build systemd environment arguments.
 ENV_ARGS=()
 
@@ -96,7 +85,11 @@ ENV_ARGS=()
 
 # Electron / Chromium hints.
 ENV_ARGS+=("--setenv=ELECTRON_OZONE_PLATFORM_HINT=auto")
-ENV_ARGS+=("--setenv=TZ=$NETSLICE_TZ")
+if [ "$ROUTING_ONLY" -eq 0 ]; then
+    ENV_ARGS+=("--setenv=TZ=$NETSLICE_TZ")
+elif [ -n "${TZ:-}" ]; then
+    ENV_ARGS+=("--setenv=TZ=$TZ")
+fi
 # ENV_ARGS+=("--setenv=LANG=$NETSLICE_LANG")
 
 # Preserve basic user/session env needed by Electron, SSH, askpass, shells.
@@ -115,6 +108,40 @@ done
 # Transparent cgroup/TUN routing should also work independently.
 PROXY_URL="http://${NETSLICE_PROXY_HOST}:${NETSLICE_PROXY_PORT}"
 
+# Both modes keep the same routing scope and launch as the invoking user.
+SYSTEMD_ARGS=(
+    --description="Netslice Proxied App"
+    --slice="$NETSLICE_SLICE"
+    --scope
+    --uid="$USER_ID"
+    --gid="$GROUP_ID"
+)
+
+if [ "$ROUTING_ONLY" -eq 1 ]; then
+    # Preserve the host bus address across sudo/systemd. No socket is hidden.
+    if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+        ENV_ARGS+=("--setenv=DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS")
+    fi
+    exec sudo systemd-run "${SYSTEMD_ARGS[@]}" "${ENV_ARGS[@]}" -- "$@"
+fi
+
+# Bubblewrap refuses to mount directly on /etc/localtime when it is a symlink.
+# Bind the fake timezone over the symlink's resolved regular-file target instead.
+LOCALTIME_TARGET="$(readlink -f /etc/localtime)"
+NETSLICE_TZ_FILE="$(readlink -f "/usr/share/zoneinfo/$NETSLICE_TZ")"
+
+# Persistent fake machine-id.
+# Do NOT bind /dev/null to /etc/machine-id; Electron may use machine-id-derived storage.
+FAKE_CONFIG_DIR="$HOME/.config/netslice"
+FAKE_MACHINE_ID_FILE="$FAKE_CONFIG_DIR/fake-machine-id"
+
+mkdir -p "$FAKE_CONFIG_DIR"
+
+if [ ! -f "$FAKE_MACHINE_ID_FILE" ]; then
+    openssl rand -hex 16 > "$FAKE_MACHINE_ID_FILE"
+    chmod 600 "$FAKE_MACHINE_ID_FILE"
+fi
+
 # Hide the host user session bus unless access was explicitly requested. Set
 # the opt-in environment inside bwrap so it cannot be lost at the sudo/systemd
 # boundary.
@@ -129,14 +156,7 @@ if [ "$ALLOW_DBUS" -eq 1 ]; then
     )
 fi
 
-exec sudo systemd-run \
-    --description="Netslice Proxied App" \
-    --slice="$NETSLICE_SLICE" \
-    --scope \
-    --uid="$USER_ID" \
-    --gid="$GROUP_ID" \
-    "${ENV_ARGS[@]}" \
-    -- \
+exec sudo systemd-run "${SYSTEMD_ARGS[@]}" "${ENV_ARGS[@]}" -- \
     bwrap \
     --dev-bind / / \
     --ro-bind "$NETSLICE_TZ_FILE" "$LOCALTIME_TARGET" \
