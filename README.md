@@ -14,6 +14,7 @@ Netslice creates a mathematically proven quarantine cell using a two-pronged app
 
 ## Prerequisites
 - systemd
+- util-linux (`/usr/bin/setpriv`)
 - nftables
 - bubblewrap
 - iproute2
@@ -73,7 +74,13 @@ netslice-launch --routing-only codex --sandbox workspace-write --ask-for-approva
 ```
 
 This mode uses the same systemd slice, invoking user/group, and existing
-nftables/TUN rules. It does not hide the host session D-Bus socket, replace the
+nftables/TUN rules. Both modes initialize the invoking user's supplementary
+groups with `setpriv --init-groups` before starting the application. This keeps
+account memberships such as `wheel`, `video`, and `render` and avoids inheriting
+sudo's root group. Group membership is loaded from the account database, so
+recent account changes may differ from an older login session.
+
+Routing-only mode does not hide the host session D-Bus socket, replace the
 machine ID, or spoof the timezone, and does not require Bubblewrap or create a
 fake machine ID. `--allow_dbus` is redundant when combined with `--routing-only`.
 Put Netslice options before the application name; arguments after it are passed

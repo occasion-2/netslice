@@ -36,9 +36,9 @@ class LauncherTests(unittest.TestCase):
     def test_routing_only_preserves_command_and_scope(self):
         args = self.run_launcher('--routing-only', 'app with spaces', 'a b', '', '--allow_dbus', '$(literal)')
         self.assertEqual(args[0], 'systemd-run')
-        for arg in ['--slice=test-routing.slice', '--scope', f'--uid={os.getuid()}', f'--gid={os.getgid()}']:
+        for arg in ['--slice=test-routing.slice', '--scope', f'--reuid={os.getuid()}', f'--regid={os.getgid()}']:
             self.assertIn(arg, args)
-        self.assertEqual(args[args.index('--')+1:], ['app with spaces', 'a b', '', '--allow_dbus', '$(literal)'])
+        self.assertEqual(args[args.index('--', args.index('--') + 1)+1:], ['app with spaces', 'a b', '', '--allow_dbus', '$(literal)'])
         self.assertNotIn('bwrap', args)
         self.assertIn('--setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/test/bus', args)
         self.assertIn('--setenv=TZ=Asia/Yekaterinburg', args)
@@ -90,3 +90,15 @@ class LauncherTests(unittest.TestCase):
     def test_help(self):
         self.assertIn('--routing-only', self.run_launcher('--help'))
         self.assertFalse(self.capture.exists())
+
+    def test_credentials_initialized_before_application_in_both_modes(self):
+        for mode in [[], ['--routing-only']]:
+            with self.subTest(mode=mode):
+                args = self.run_launcher(*mode, 'app')
+                boundary = args.index('--')
+                self.assertFalse(any(a.startswith(('--uid=', '--gid=')) for a in args[:boundary]))
+                self.assertEqual(args[boundary+1:boundary+8], [
+                    '/usr/bin/setpriv', f'--reuid={os.getuid()}',
+                    f'--regid={os.getgid()}', '--init-groups',
+                    '--inh-caps=-all', '--ambient-caps=-all', '--'])
+                self.assertEqual(args[boundary+8], 'app' if mode else 'bwrap')

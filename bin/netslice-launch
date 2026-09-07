@@ -113,8 +113,19 @@ SYSTEMD_ARGS=(
     --description="Netslice Proxied App"
     --slice="$NETSLICE_SLICE"
     --scope
-    --uid="$USER_ID"
-    --gid="$GROUP_ID"
+)
+
+# systemd-run --scope --uid/--gid can retain sudo's supplementary groups.
+# Drop credentials explicitly, initializing the user's groups before any app
+# (or Bubblewrap) runs. Use a fixed path because this step starts as root.
+USER_ARGS=(
+    /usr/bin/setpriv
+    --reuid="$USER_ID"
+    --regid="$GROUP_ID"
+    --init-groups
+    --inh-caps=-all
+    --ambient-caps=-all
+    --
 )
 
 if [ "$ROUTING_ONLY" -eq 1 ]; then
@@ -122,7 +133,7 @@ if [ "$ROUTING_ONLY" -eq 1 ]; then
     if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
         ENV_ARGS+=("--setenv=DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS")
     fi
-    exec sudo systemd-run "${SYSTEMD_ARGS[@]}" "${ENV_ARGS[@]}" -- "$@"
+    exec sudo systemd-run "${SYSTEMD_ARGS[@]}" "${ENV_ARGS[@]}" -- "${USER_ARGS[@]}" "$@"
 fi
 
 # Bubblewrap refuses to mount directly on /etc/localtime when it is a symlink.
@@ -156,7 +167,7 @@ if [ "$ALLOW_DBUS" -eq 1 ]; then
     )
 fi
 
-exec sudo systemd-run "${SYSTEMD_ARGS[@]}" "${ENV_ARGS[@]}" -- \
+exec sudo systemd-run "${SYSTEMD_ARGS[@]}" "${ENV_ARGS[@]}" -- "${USER_ARGS[@]}" \
     bwrap \
     --dev-bind / / \
     --ro-bind "$NETSLICE_TZ_FILE" "$LOCALTIME_TARGET" \
