@@ -1,47 +1,22 @@
 [Unit]
-Description=Netslice Traffic Routing & Marking
-Requires=netslice-anchor.service
-BindsTo=xray.service
-After=network.target netslice-anchor.service xray.service
+Description=Netslice IPv4 routing reconciliation (firewall has separate ownership)
+Wants=netslice-firewall.service xray.service
+After=netslice-firewall.service xray.service
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
-EnvironmentFile=@@SYSCONFDIR@@/netslice.conf
-
-# --- WAIT FOR TUN DEVICE ---
-ExecStartPre=/usr/bin/bash -c 'while ! /usr/bin/ip link show dev "${NETSLICE_TUN_DEV}" >/dev/null 2>&1; do sleep 1; done'
-
-# --- CLEANUP ---
-ExecStartPre=-/usr/bin/ip rule del fwmark ${NETSLICE_FWMARK} lookup ${NETSLICE_TABLE}
-ExecStartPre=-/usr/bin/ip -6 rule del fwmark ${NETSLICE_FWMARK} lookup ${NETSLICE_TABLE}
-ExecStartPre=-/usr/bin/ip route flush table ${NETSLICE_TABLE}
-ExecStartPre=-/usr/bin/ip -6 route flush table ${NETSLICE_TABLE}
-ExecStartPre=-/usr/bin/nft flush chain inet netslice_cgroup output
-ExecStartPre=-/usr/bin/ip addr flush dev ${NETSLICE_TUN_DEV}
-
-# --- INTERFACE SETUP (THE FIX) ---
-ExecStart=/usr/bin/ip addr add ${NETSLICE_GATEWAY_IP}/24 dev ${NETSLICE_TUN_DEV}
-ExecStart=/usr/bin/ip link set dev ${NETSLICE_TUN_DEV} up
-
-# --- POLICY ROUTING ---
-ExecStart=/usr/bin/ip rule add fwmark ${NETSLICE_FWMARK} lookup ${NETSLICE_TABLE}
-ExecStart=/usr/bin/ip -6 rule add fwmark ${NETSLICE_FWMARK} lookup ${NETSLICE_TABLE}
-ExecStart=/usr/bin/ip route add default dev ${NETSLICE_TUN_DEV} table ${NETSLICE_TABLE}
-ExecStart=-/usr/bin/ip -6 route add default dev ${NETSLICE_TUN_DEV} table ${NETSLICE_TABLE}
-
-# NFTABLES rule load
-ExecStart=/usr/bin/bash -c '\
-    SLICE_PATH="system.slice/${NETSLICE_SLICE}"; \
-    /usr/bin/nft -D SLICE_PATH="$SLICE_PATH" -D FWMARK=${NETSLICE_FWMARK} -D TUN_DEV=${NETSLICE_TUN_DEV} -f @@SYSCONFDIR@@/nftables/netslice.nft'
-
-# --- SHUTDOWN ---
-ExecStop=/usr/bin/nft flush chain inet netslice_cgroup output
-ExecStop=-/usr/bin/ip route flush table ${NETSLICE_TABLE}
-ExecStop=-/usr/bin/ip -6 route flush table ${NETSLICE_TABLE}
-ExecStop=-/usr/bin/ip rule del fwmark ${NETSLICE_FWMARK} lookup ${NETSLICE_TABLE}
-ExecStop=-/usr/bin/ip -6 rule del fwmark ${NETSLICE_FWMARK} lookup ${NETSLICE_TABLE}
-ExecStop=-/usr/bin/ip addr flush dev ${NETSLICE_TUN_DEV}
+Type=exec
+ExecStart=@@PREFIX@@/bin/netslice-control routing-watch
+ExecStopPost=@@PREFIX@@/bin/netslice-control routing-stop
+Restart=on-failure
+RestartSec=2s
+TimeoutStartSec=20s
+TimeoutStopSec=75s
+RuntimeDirectory=netslice
+RuntimeDirectoryPreserve=yes
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
 
 [Install]
 WantedBy=multi-user.target

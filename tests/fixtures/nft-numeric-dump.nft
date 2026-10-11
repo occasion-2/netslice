@@ -1,0 +1,22 @@
+table inet netslice_guard {
+	comment "netslice-v2 cgroup=812 config=736beb5e5fbd4234"
+	chain mark_out {
+		type route hook output priority -150; policy accept;
+		oifname "lo" accept
+		meta nfproto 2 socket cgroupv2 level 2 "system.slice/system-netslice.slice" meta mark set 0x000015b3 counter
+	}
+
+	chain guard_out {
+		type filter hook output priority 0; policy accept;
+		oifname "lo" accept
+		socket cgroupv2 level 2 "system.slice/system-netslice.slice" meta nfproto 10 counter drop
+		socket cgroupv2 level 2 "system.slice/system-netslice.slice" meta priority set 4e53:1 counter
+	}
+
+	chain kill_post {
+		type filter hook postrouting priority 0; policy accept;
+		oifname "lo" accept
+		meta priority 4e53:1 oifname != "xray_tun" counter drop
+		meta mark 0x000015b3 oifname != "xray_tun" counter drop
+	}
+}

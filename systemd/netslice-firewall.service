@@ -1,0 +1,23 @@
+[Unit]
+Description=Netslice persistent cgroup firewall
+Requires=netslice-anchor.service
+After=netslice-anchor.service nftables.service
+Before=netslice-routing.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=@@PREFIX@@/bin/netslice-control firewall-apply
+ExecReload=@@PREFIX@@/bin/netslice-control firewall-apply
+# No ExecStop: stopping or restarting this unit retains kernel protection.
+TimeoutStartSec=60s
+TimeoutStopSec=10s
+RuntimeDirectory=netslice
+RuntimeDirectoryPreserve=yes
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target

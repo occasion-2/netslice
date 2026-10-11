@@ -1,0 +1,144 @@
+#!/bin/bash
+# Human-operated deployment aid. Read-only preflight is the default.
+set -euo pipefail
+export PATH=/usr/bin:/bin
+export LC_ALL=C
+usage() {
+    cat <<'HELP'
+Usage: netslice-maintenance [preflight]
+       netslice-maintenance backup ABSOLUTE_DIRECTORY
+       netslice-maintenance firewall STAGE PREFIX --approved-live --independent-recovery
+       netslice-maintenance routing STAGE PREFIX --approved-live --independent-recovery
+       netslice-maintenance launcher STAGE PREFIX --approved-live --independent-recovery
+       netslice-maintenance rollback-routing PREFIX --approved-live --independent-recovery
+See docs/DEPLOYMENT.md before invoking any mutation stage.
+This client may itself depend on Netslice. Connectivity can be lost.
+HELP
+}
+require_root() { [[ $(id -u) == 0 ]] || { echo 'Run from an independent root console.' >&2; exit 77; }; }
+require_approval() {
+    [[ ${1:-} == --approved-live && ${2:-} == --independent-recovery ]] || {
+        echo 'Live operations require explicit approval and verified independent recovery access.' >&2
+        exit 77
+    }
+    require_root
+    echo 'WARNING: live networking operation; this client may lose connectivity.' >&2
+}
+preflight() {
+    cat /proc/self/cgroup
+    systemctl show netslice-anchor.service netslice-routing.service netslice-firewall.service xray.service -p ActiveState -p SubState -p ControlGroup -p FragmentPath || true
+    ip -4 rule show
+    ip -6 rule show
+    ip -4 route show table 101 || true
+    ip -6 route show table 101 || true
+    ip address show dev xray_tun || true
+    nft list table inet netslice_cgroup || true
+    nft list table inet netslice_guard || true
+    systemctl list-units --all --type=scope --no-pager
+    ip -4 route show
+    ip -6 route show
+    # Reveal shaping/tag conflicts without changing any qdisc.
+    tc qdisc show
+    tc filter show dev xray_tun || true
+    echo 'Inspect /etc/netslice.conf and Xray TUN settings locally; do not publish proxy credentials.'
+    echo 'Preflight does not establish independent recovery access or remote proxy health.'
+}
+# Install atomically so active helper invocations never see a partially copied file.
+put() {
+    local source=$1 target=$2 mode=$3 temporary
+    temporary=$(mktemp "${target}.new.XXXXXX")
+    install -m "$mode" "$source" "$temporary"
+    mv -fT "$temporary" "$target"
+}
+case ${1:-preflight} in
+    -h|--help) usage ;;
+    preflight) preflight ;;
+    backup)
+        [[ $# == 2 && $2 == /* && ! -e $2 ]] || { usage >&2; exit 2; }
+        require_root
+        umask 077
+        mkdir -m700 "$2"
+        cp -a /etc/netslice.conf "$2/"
+        for path in /etc/systemd/system/netslice-*.service /usr/lib/systemd/system/netslice-*.service /etc/nftables/netslice.nft; do
+            [[ -f $path ]] || continue
+            cp --parents -a "$path" "$2/"
+        done
+        for path in /etc/systemd/system/netslice-*.service.d /usr/lib/systemd/system/netslice-*.service.d; do
+            [[ -d $path ]] || continue
+            cp --parents -a "$path" "$2/"
+        done
+        for path in /usr/local/bin/netslice-launch /usr/bin/netslice-launch /usr/local/bin/netslice-control /usr/bin/netslice-control; do
+            [[ -f $path ]] || continue
+            cp --parents -a "$path" "$2/"
+        done
+        preflight > "$2/state.txt" 2>&1
+        pacman -Q netslice-git > "$2/package.txt" 2>&1 || true
+        echo "Backup saved to $2; proxy credentials were not copied."
+        ;;
+    firewall|routing|launcher)
+        [[ $# == 5 && $2 == /* && $3 == /* ]] || { usage >&2; exit 2; }
+        action=$1 stage=$2 prefix=$3
+        require_approval "$4" "$5"
+        [[ -f $stage$prefix/bin/netslice-control && -f $stage/etc/nftables/netslice.nft ]] || { echo 'Invalid stage.' >&2; exit 2; }
+        unitdir=$stage/etc/systemd/system
+        [[ -f $unitdir/netslice-firewall.service ]] || unitdir=$stage/usr/lib/systemd/system
+        for name in netslice-anchor netslice-firewall netslice-routing; do
+            [[ -f $unitdir/$name.service ]] || { echo 'Stage is missing a required unit.' >&2; exit 2; }
+        done
+        firewall_unit=$(<"$unitdir/netslice-firewall.service")
+        [[ $firewall_unit == *"ExecStart=$prefix/bin/netslice-control firewall-apply"* ]] || { echo 'Staged prefix mismatch.' >&2; exit 2; }
+        [[ -d $prefix/bin && -d /etc/systemd/system && -f /etc/netslice.conf ]] || { echo 'Missing installed paths/configuration.' >&2; exit 2; }
+        if [[ $action == firewall ]]; then
+            put "$stage$prefix/bin/netslice-control" "$prefix/bin/netslice-control" 755
+            put "$stage/etc/nftables/netslice.nft" /etc/nftables/netslice.nft 644
+            put "$unitdir/netslice-firewall.service" /etc/systemd/system/netslice-firewall.service 644
+            systemctl daemon-reload
+            # Anchor must already be active during migration; never restart it.
+            systemctl is-active --quiet netslice-anchor.service
+            systemctl start netslice-firewall.service
+            "$prefix/bin/netslice-control" ready
+        elif [[ $action == routing ]]; then
+            "$prefix/bin/netslice-control" ready
+            [[ ! -e /run/systemd/system/netslice-routing.service.d/90-netslice-migration.conf ]] || { echo 'A previous migration override needs review.' >&2; exit 1; }
+            put "$unitdir/netslice-anchor.service" /etc/systemd/system/netslice-anchor.service 644
+            put "$unitdir/netslice-routing.service" /etc/systemd/system/netslice-routing.service 644
+            # Replace old stop actions BEFORE stopping the old unit. Preserve
+            # existing routes until the human performs the exact migration.
+            mkdir -p /run/systemd/system/netslice-routing.service.d
+            cat > /run/systemd/system/netslice-routing.service.d/90-netslice-migration.conf <<'DROPIN'
+[Service]
+ExecStop=
+ExecStopPost=
+DROPIN
+            systemctl daemon-reload
+            [[ -z $(systemctl show netslice-routing.service -p ExecStop --value) &&
+               -z $(systemctl show netslice-routing.service -p ExecStopPost --value) &&
+               -z $(systemctl show netslice-routing.service -p ExecStartPre --value) ]] || {
+                echo 'Effective routing actions differ from the migration plan; inspect overriding drop-ins before stopping.' >&2
+                exit 1
+            }
+            systemctl stop netslice-routing.service || {
+                echo 'Stop reported failure. Inspect unit logs and kernel state before continuing.' >&2
+                exit 1
+            }
+            rm /run/systemd/system/netslice-routing.service.d/90-netslice-migration.conf
+            systemctl daemon-reload
+            echo 'Old routing unit stopped with new cleanup semantics.'
+            echo 'Remove ONLY the audited legacy rule/default entries per DEPLOYMENT.md, then run routing-once and start the new routing unit.'
+        else
+            "$prefix/bin/netslice-control" ready
+            "$prefix/bin/netslice-control" status
+            put "$stage$prefix/bin/netslice-launch" "$prefix/bin/netslice-launch" 755
+            echo 'Launcher installed. Enablement and connectivity checks are manual steps.'
+        fi
+        ;;
+    rollback-routing)
+        [[ $# == 4 && $2 == /* ]] || { usage >&2; exit 2; }
+        require_approval "$3" "$4"
+        "$2/bin/netslice-control" ready
+        systemctl stop netslice-routing.service
+        echo 'New routing stopped; firewall retained. Restore the exact backed-up IPv4 rule and TUN default from the independent console.'
+        echo 'Keep the new helper/template/firewall until all protected applications have exited. See DEPLOYMENT.md.'
+        ;;
+    *) usage >&2; exit 2 ;;
+esac

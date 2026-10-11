@@ -1,24 +1,23 @@
-# /etc/nftables/netslice.nft
-
-table inet netslice_cgroup
-flush table inet netslice_cgroup
-
-table inet netslice_cgroup {
+# Rendered by netslice-control; never load this template directly.
+# The old inet netslice_cgroup table is left intact during migration.
+table inet netslice_guard {
+    comment "@IDENTITY@"
     chain mark_out {
-        type route hook output priority mangle; policy accept;
-
-        # Never mark localhost/proxy/internal IDE traffic.
+        type route hook output priority -150; policy accept;
         oifname "lo" accept
-
-        # Mark everything from the netslice cgroup.
-        socket cgroupv2 level 2 $SLICE_PATH meta mark set $FWMARK counter
+        meta nfproto ipv4 socket cgroupv2 level 2 @CGROUP_ID@ meta mark set @FWMARK@ counter
     }
-
+    chain guard_out {
+        type filter hook output priority 0; policy accept;
+        oifname "lo" accept
+        socket cgroupv2 level 2 @CGROUP_ID@ meta nfproto ipv6 counter drop
+        # Independent of the routing mark. Output oifname is the original route.
+        socket cgroupv2 level 2 @CGROUP_ID@ meta priority set 0x4e530001 counter
+    }
     chain kill_post {
-        type filter hook postrouting priority filter; policy accept;
-
-        # After policy routing has happened, kill marked packets
-        # that still try to leave outside the TUN.
-        meta mark $FWMARK oifname != $TUN_DEV counter drop
+        type filter hook postrouting priority 0; policy accept;
+        oifname "lo" accept
+        meta priority 0x4e530001 oifname != "@TUN_DEV@" counter drop
+        meta mark @FWMARK@ oifname != "@TUN_DEV@" counter drop
     }
 }

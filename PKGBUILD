@@ -1,17 +1,17 @@
 pkgname=netslice-git
 pkgver=r1.03d7051
-pkgrel=1
-pkgdesc="Seamless per-application network isolation routing via cgroups, nftables, and bubblewrap"
+pkgrel=2
+pkgdesc="Selective per-application TUN routing with persistent nftables protection"
 arch=('any')
 url="https://github.com/occasion-2/netslice"
 license=('MIT')
-depends=('bash' 'nftables' 'bubblewrap' 'iproute2' 'systemd' 'util-linux')
+depends=('bash' 'python' 'nftables' 'bubblewrap' 'iproute2' 'systemd' 'util-linux' 'sudo' 'openssl')
 makedepends=('git' 'make')
 provides=('netslice')
 conflicts=('netslice')
-source=("git+file:///home/denis/Documents/temp/netslice")
+source=("git+https://github.com/occasion-2/netslice.git")
 md5sums=('SKIP')
-backup=('etc/netslice.conf')
+backup=('etc/netslice.conf' 'etc/nftables/netslice.nft')
 
 pkgver() {
   cd "$srcdir/${pkgname%-git}"

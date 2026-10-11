@@ -2,3 +2,5 @@ pkg/
 src/
 netslice/
 *.pkg.tar.zst
+__pycache__/
+/docs/development/

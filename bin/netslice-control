@@ -1,0 +1,376 @@
+#!/usr/bin/python3 -I
+"""Netslice kernel-state helper. No environment-selected commands or config paths."""
+import argparse
+import contextlib
+import fcntl
+import hashlib
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+import time
+
+CONFIG = Path('@@SYSCONFDIR@@/netslice.conf')
+TEMPLATE = Path('@@SYSCONFDIR@@/nftables/netslice.nft')
+CGROUP = Path('/sys/fs/cgroup/system.slice/system-netslice.slice')
+SELF_CGROUP = Path('/proc/self/cgroup')
+LOCK = Path('/run/netslice/control.lock')
+COMMANDS = {'ip': '/usr/bin/ip', 'nft': '/usr/bin/nft', 'systemctl': '/usr/bin/systemctl'}
+TABLE = 'netslice_guard'
+PROTO = 186
+# Fingerprint of canonical template tokens, excluding comments/formatting.
+# Prevent a damaged or weakened installed template from redefining readiness.
+TEMPLATE_SHA256 = '7eb5c96158050f8073a69c2b0018078e516cd273f42942907bff048b2231896e'
+DEFAULTS = {
+    'NETSLICE_TUN_DEV': 'xray_tun', 'NETSLICE_SLICE': 'system-netslice.slice',
+    'NETSLICE_FWMARK': '5555', 'NETSLICE_TABLE': '101',
+    'NETSLICE_GATEWAY_IP': '10.255.255.1', 'NETSLICE_PREFIXLEN': '24',
+    'NETSLICE_RULE_PRIORITY': '10555', 'NETSLICE_POLL_SEC': '2',
+    'NETSLICE_PROXY_HOST': '127.0.0.1', 'NETSLICE_PROXY_PORT': '10808',
+    'NETSLICE_TZ': 'America/New_York', 'NETSLICE_LANG': 'en_US.UTF-8',
+}
+
+
+class Error(Exception):
+    pass
+
+
+def number(value):
+    return int(str(value), 16 if str(value).lower().startswith('0x') else 10)
+
+
+def config(path=None):
+    path = CONFIG if path is None else Path(path)
+    data = DEFAULTS.copy()
+    seen = set()
+    for lineno, line in enumerate(path.read_text().splitlines(), 1):
+        words = shlex.split(line, comments=True)
+        if not words:
+            continue
+        if len(words) != 1 or '=' not in words[0]:
+            raise Error(f'{path}:{lineno}: expected NAME=value')
+        key, value = words[0].split('=', 1)
+        if key not in data or key in seen or re.search(r'[\x00-\x1f`$;]', value):
+            raise Error(f'{path}:{lineno}: unknown, duplicate, or unsafe assignment')
+        seen.add(key)
+        data[key] = value
+    if data['NETSLICE_SLICE'] != 'system-netslice.slice':
+        raise Error('NETSLICE_SLICE must match the installed system-netslice.slice')
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,15}', data['NETSLICE_TUN_DEV']) or data['NETSLICE_TUN_DEV'] == 'lo':
+        raise Error('invalid TUN device name')
+    for key, low, high in [('NETSLICE_FWMARK', 1, 2**32-1),
+                           ('NETSLICE_TABLE', 1, 2**32-1),
+                           ('NETSLICE_RULE_PRIORITY', 1, 32765),
+                           ('NETSLICE_PREFIXLEN', 0, 32),
+                           ('NETSLICE_POLL_SEC', 1, 30),
+                           ('NETSLICE_PROXY_PORT', 1, 65535)]:
+        n = number(data[key])
+        if not low <= n <= high:
+            raise Error(f'invalid {key}')
+        data[key] = str(n)
+    if number(data['NETSLICE_TABLE']) in (253, 254, 255):
+        raise Error('a built-in routing table cannot belong to Netslice')
+    ipaddress.IPv4Address(data['NETSLICE_GATEWAY_IP'])
+    if not re.fullmatch(r'[A-Za-z0-9_./+-]+', data['NETSLICE_TZ']) or '..' in data['NETSLICE_TZ'].split('/'):
+        raise Error('invalid timezone')
+    if not re.fullmatch(r'[A-Za-z0-9_.:-]+', data['NETSLICE_PROXY_HOST']):
+        raise Error('invalid proxy host')
+    return data
+
+
+def run(command, *args, input=None, optional=False):
+    result = subprocess.run([COMMANDS[command], *map(str, args)], input=input,
+                            capture_output=True, text=True, timeout=15,
+                            env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'})
+    if result.returncode and not optional:
+        raise Error(f'{command} failed: {result.stderr.strip()}')
+    return result
+
+
+def ip_json(*args):
+    return json.loads(run('ip', '-j', '-N', *args).stdout)
+
+
+@contextlib.contextmanager
+def lock():
+    with LOCK.open('a') as stream:
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise Error('Netslice operation lock timed out')
+                time.sleep(0.1)
+        yield
+
+
+def cgroup_id():
+    if not (CGROUP / 'cgroup.controllers').exists():
+        raise Error('expected cgroup v2 slice is absent')
+    return CGROUP.stat().st_ino
+
+
+def render(c):
+    identity = cgroup_id()
+    signature = hashlib.sha256(json.dumps({k: c[k] for k in (
+        'NETSLICE_TUN_DEV', 'NETSLICE_FWMARK', 'NETSLICE_SLICE')}, sort_keys=True).encode()).hexdigest()[:16]
+    text = TEMPLATE.read_text()
+    if hashlib.sha256(json.dumps(tokens(text), separators=(',', ':')).encode()).hexdigest() != TEMPLATE_SHA256:
+        raise Error('unsupported firewall template; restore the supplied template before activation')
+    for name, value in {'CGROUP_ID': str(identity), 'FWMARK': c['NETSLICE_FWMARK'],
+                        'TUN_DEV': c['NETSLICE_TUN_DEV'],
+                        'IDENTITY': f'netslice-v2 cgroup={identity} config={signature}'}.items():
+        text = text.replace('@' + name + '@', value)
+    if re.search(r'@[A-Z_]+@', text):
+        raise Error('unresolved firewall template token')
+    return text
+
+
+def tokens(text):
+    """Compare the entire stateless kernel dump, hooks and ordered rules included.
+
+    Narrow canonicalization avoids relying on JSON socket-level serialization.
+    Unknown output formats fail closed instead of accepting a weaker rule.
+    """
+    text = re.sub(r'counter packets [0-9]+ bytes [0-9]+', 'counter', text)
+    lexer = shlex.shlex(text, posix=True, punctuation_chars='{};')
+    lexer.whitespace_split = True
+    result = [v for v in lexer if v != ';']
+    result = [str(number(v)) if re.fullmatch(r'0x[0-9a-fA-F]+', v) else v for v in result]
+    for index, value in enumerate(result):
+        # --numeric prints NFPROTO_IPV4/IPV6 as 2/10. Normalize only
+        # the value of this expression, never cgroup IDs or priorities.
+        if result[max(0, index-2):index] == ['meta', 'nfproto'] and value in ('2', '10'):
+            result[index] = {'2': 'ipv4', '10': 'ipv6'}[value]
+        if re.fullmatch(r'(?:0x)?[0-9a-fA-F]{1,4}:(?:0x)?[0-9a-fA-F]{1,4}', value):
+            if result[max(0, index-3):index][-2:] == ['meta', 'priority'] or result[max(0, index-3):index] == ['meta', 'priority', 'set']:
+                major, minor = value.split(':')
+                result[index] = str((int(major, 16) << 16) | int(minor, 16))
+    return result
+
+
+def firewall_dump():
+    return run('nft', '-s', '-n', '-y', 'list', 'table', 'inet', TABLE).stdout
+
+
+def firewall_ready(c):
+    expected = tokens(render(c))
+    actual = tokens(firewall_dump())
+    for index in range(len(actual) - 4):
+        if actual[index:index+5] == ['socket', 'cgroupv2', 'level', '2', 'system.slice/system-netslice.slice']:
+            actual[index+4] = str(cgroup_id())
+    if actual != expected:
+        position = next(i for i in range(max(len(actual), len(expected)))
+                        if actual[i:i+1] != expected[i:i+1])
+        raise Error('firewall absent, stale, or inconsistent; '
+                    f'token {position}: expected {expected[position:position+6]!r}, '
+                    f'actual {actual[position:position+6]!r}; '
+                    'have an administrator inspect netslice-firewall.service and netslice-control status')
+
+
+def firewall_apply(c):
+    tables = json.loads(run('nft', '-j', 'list', 'tables').stdout)['nftables']
+    exists = any(v.get('table', {}).get('family') == 'inet' and
+                 v.get('table', {}).get('name') == TABLE for v in tables)
+    if exists and not re.search(r'comment "netslice-v2 cgroup=[0-9]+ config=[0-9a-f]+"', firewall_dump()):
+        raise Error('reserved firewall table lacks Netslice ownership; refusing replacement')
+    script = ('delete table inet ' + TABLE + '\n' if exists else '') + render(c)
+    # Deletion and recreation share one transaction; failure retains old rules.
+    run('nft', '-f', '-', input=script)
+    firewall_ready(c)
+
+
+def rule_owned(rule, c):
+    allowed = {'priority', 'src', 'dst', 'fwmark', 'fwmask', 'table', 'protocol'}
+    return (set(rule) <= allowed and rule.get('src', 'all') == 'all' and
+            rule.get('dst', 'all') == 'all' and
+            number(rule.get('priority', 0)) == number(c['NETSLICE_RULE_PRIORITY']) and
+            number(rule.get('fwmark', 0)) == number(c['NETSLICE_FWMARK']) and
+            number(rule.get('fwmask', '0xffffffff')) == 2**32-1 and
+            str(rule.get('table')) == c['NETSLICE_TABLE'] and
+            str(rule.get('protocol')) == str(PROTO))
+
+
+def route_owned(route, c):
+    allowed = {'type', 'dst', 'dev', 'protocol', 'scope', 'metric', 'flags', 'table'}
+    if set(route) - allowed or route.get('dst') != 'default' or str(route.get('protocol')) != str(PROTO) or route.get('flags'):
+        return False
+    return ((route.get('type', 'unicast') == 'unicast' and
+             route.get('dev') == c['NETSLICE_TUN_DEV'] and route.get('metric') == 10) or
+            (route.get('type') == 'unreachable' and route.get('metric') == 32760 and 'dev' not in route))
+
+
+def routing_state(c):
+    rules = ip_json('-4', 'rule', 'show')
+    result = run('ip', '-j', '-N', '-4', 'route', 'show', 'table', c['NETSLICE_TABLE'], optional=True)
+    if result.returncode:
+        if result.stderr.strip() not in ('Error: ipv4: FIB table does not exist.\nDump terminated', 'Error: ipv4: FIB table does not exist.'):
+            raise Error('unable to inspect Netslice routing table: ' + result.stderr.strip())
+        routes = []
+    else:
+        routes = json.loads(result.stdout)
+    # ip -N renders RTN_UNICAST/RTN_UNREACHABLE as 1/7. Return canonical
+    # types so ownership, reconciliation, status, and cleanup agree.
+    for route in routes:
+        kind = str(route.get('type', 'unicast'))
+        if kind in ('1', '7'):
+            route['type'] = {'1': 'unicast', '7': 'unreachable'}[kind]
+    relevant = []
+    for rule in rules:
+        mask = number(rule.get('fwmask', '0xffffffff'))
+        matches_mark = 'fwmark' in rule and (number(rule['fwmark']) & mask) == (number(c['NETSLICE_FWMARK']) & mask)
+        if matches_mark or number(rule.get('priority', 0)) == number(c['NETSLICE_RULE_PRIORITY']):
+            if not rule_owned(rule, c):
+                raise Error('conflicting policy rule; review migration before changing it')
+            relevant.append(rule)
+    if len(relevant) > 1 or any(not route_owned(route, c) for route in routes):
+        raise Error('duplicate rules or foreign routes in reserved Netslice table; refusing mutation')
+    return relevant, routes
+
+
+def rule_args(c):
+    return ['priority', c['NETSLICE_RULE_PRIORITY'], 'fwmark', c['NETSLICE_FWMARK'] + '/0xffffffff',
+            'lookup', c['NETSLICE_TABLE'], 'protocol', str(PROTO)]
+
+
+def route_args(route, c):
+    args = [route.get('type', 'unicast'), 'default']
+    if 'dev' in route:
+        args += ['dev', route['dev']]
+    return args + ['table', c['NETSLICE_TABLE'], 'proto', str(PROTO), 'metric', str(route['metric'])]
+
+
+def routing_reconcile(c):
+    firewall_ready(c)
+    rules, routes = routing_state(c)
+    if not any(r.get('type') == 'unreachable' for r in routes):
+        run('ip', '-4', 'route', 'add', 'unreachable', 'default', 'table', c['NETSLICE_TABLE'], 'proto', PROTO, 'metric', 32760)
+    if not rules:
+        run('ip', '-4', 'rule', 'add', *rule_args(c))
+    link = run('ip', '-j', 'link', 'show', 'dev', c['NETSLICE_TUN_DEV'], optional=True)
+    if link.returncode:
+        for route in routes:
+            if 'dev' in route:
+                run('ip', '-4', 'route', 'del', *route_args(route, c))
+        return 'degraded: TUN unavailable; firewall and terminal route retained'
+    addresses = ip_json('-4', 'address', 'show', 'dev', c['NETSLICE_TUN_DEV'])
+    expected = (c['NETSLICE_GATEWAY_IP'], number(c['NETSLICE_PREFIXLEN']))
+    present = [(a['local'], a['prefixlen']) for item in addresses for a in item.get('addr_info', [])]
+    if any(address == expected[0] and prefix != expected[1] for address, prefix in present):
+        raise Error('configured TUN address has a conflicting prefix; refusing replacement')
+    if expected not in present:
+        run('ip', '-4', 'address', 'add', f'{expected[0]}/{expected[1]}', 'dev', c['NETSLICE_TUN_DEV'])
+    if 'UP' not in json.loads(link.stdout)[0].get('flags', []):
+        run('ip', 'link', 'set', 'dev', c['NETSLICE_TUN_DEV'], 'up')
+    if not any('dev' in r for r in routes):
+        run('ip', '-4', 'route', 'add', 'default', 'dev', c['NETSLICE_TUN_DEV'], 'table', c['NETSLICE_TABLE'], 'proto', PROTO, 'metric', 10)
+    return 'configured: IPv4 TUN route present; remote proxy reachability untested'
+
+
+def routing_stop(c):
+    rules, routes = routing_state(c)
+    for route in routes:
+        run('ip', '-4', 'route', 'del', *route_args(route, c))
+    for _ in rules:
+        run('ip', '-4', 'rule', 'del', *rule_args(c))
+
+
+def status(c):
+    report = {'configuration': 'configured', 'ipv6_policy': 'block protected external IPv6',
+              'remote_proxy': 'unverified', 'dns_privacy': 'not established'}
+    for service in ('netslice-anchor', 'netslice-firewall', 'netslice-routing', 'xray'):
+        report[service] = run('systemctl', 'is-active', service + '.service', optional=True).stdout.strip() or 'unavailable'
+    for name, check in [('firewall', lambda: firewall_ready(c)), ('routing', lambda: routing_state(c))]:
+        try:
+            value = check()
+            if name == 'routing':
+                rules, routes = value
+                report['policy_rules'], report['routes'] = rules, routes
+                report[name] = 'configured' if rules and any('dev' in r for r in routes) and any(r.get('type') == 'unreachable' for r in routes) else 'degraded'
+            else:
+                report[name] = 'protected: expected kernel rules present'
+        except (Error, OSError, ValueError, subprocess.SubprocessError) as exc:
+            report[name] = 'unavailable: ' + str(exc)
+    link = run('ip', '-j', 'link', 'show', 'dev', c['NETSLICE_TUN_DEV'], optional=True)
+    report['tun'] = json.loads(link.stdout) if not link.returncode else 'unavailable'
+    report['tun_state'] = 'configured' if not link.returncode and 'UP' in report['tun'][0].get('flags', []) else 'unavailable'
+    report['tun_address'] = 'unavailable'
+    if not link.returncode:
+        try:
+            addresses = ip_json('-4', 'address', 'show', 'dev', c['NETSLICE_TUN_DEV'])
+            report['tun_address'] = 'configured' if any(
+                a.get('local') == c['NETSLICE_GATEWAY_IP'] and a.get('prefixlen') == number(c['NETSLICE_PREFIXLEN'])
+                for item in addresses for a in item.get('addr_info', [])) else 'degraded: required address absent'
+        except (Error, OSError, ValueError, subprocess.SubprocessError) as exc:
+            report['tun_address'] = 'unavailable: ' + str(exc)
+    try:
+        report['slice_id'] = cgroup_id()
+    except (Error, OSError) as exc:
+        report['slice_id'] = 'unavailable: ' + str(exc)
+    print(json.dumps(report, indent=2))
+    return 0 if report['firewall'].startswith('protected:') and report['routing'] == 'configured' and report['tun_state'] == 'configured' and report['tun_address'] == 'configured' else 1
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=['config-shell', 'render-firewall', 'firewall-apply', 'ready', 'exec', 'routing-once', 'routing-watch', 'routing-stop', 'status'])
+    parser.add_argument('command', nargs=argparse.REMAINDER)
+    args = parser.parse_args(argv)
+    if args.command and args.action != 'exec':
+        parser.error('only exec accepts additional command arguments')
+    try:
+        c = config()
+        if args.action == 'config-shell':
+            print('\n'.join(k + '=' + shlex.quote(v) for k, v in c.items()))
+            return 0
+        if args.action == 'render-firewall':
+            print(render(c), end='')
+            return 0
+        if args.action == 'status':
+            return status(c)
+        if os.geteuid() != 0:
+            raise Error('this operation requires root; status is read-only')
+        if args.action == 'routing-watch':
+            previous = None
+            while True:
+                try:
+                    with lock():
+                        message = routing_reconcile(c)
+                except (Error, OSError, ValueError, subprocess.SubprocessError) as exc:
+                    message = 'degraded: ' + str(exc)
+                if message != previous:
+                    print(message, flush=True)
+                    previous = message
+                time.sleep(number(c['NETSLICE_POLL_SEC']))
+        with lock():
+            if args.action == 'firewall-apply':
+                firewall_apply(c)
+            elif args.action in ('ready', 'exec'):
+                firewall_ready(c)
+                if args.action == 'exec':
+                    command = args.command[1:] if args.command[:1] == ['--'] else args.command
+                    membership = SELF_CGROUP.read_text().strip()
+                    if not membership.startswith('0::/system.slice/system-netslice.slice/') or '\n' in membership:
+                        raise Error('application did not enter the expected Netslice scope')
+                    if not command or command[0] != '/usr/bin/setpriv':
+                        raise Error('launcher must drop credentials with the fixed setpriv executable')
+            elif args.action == 'routing-once':
+                print(routing_reconcile(c))
+            elif args.action == 'routing-stop':
+                routing_stop(c)
+        if args.action == 'exec':
+            os.execv(command[0], command)
+        return 0
+    except (Error, OSError, ValueError, subprocess.SubprocessError) as exc:
+        print('netslice-control: ' + str(exc), file=sys.stderr)
+        return 78
+
+
+if __name__ == '__main__':
+    sys.exit(main())

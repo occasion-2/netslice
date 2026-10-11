@@ -52,15 +52,15 @@ if [ "$#" -eq 0 ]; then
     exit 2
 fi
 
-CONFIG_FILE="@@SYSCONFDIR@@/netslice.conf"
+CONTROL="@@PREFIX@@/bin/netslice-control"
+# The helper parses literal assignments and emits quoted, known variable names.
+CONFIG_ENV="$("$CONTROL" config-shell)" || exit 78
+eval "$CONFIG_ENV"
 
-if [ -f "$CONFIG_FILE" ]; then
-    # shellcheck disable=SC1090
-    source "$CONFIG_FILE"
-elif [ -f "/etc/netslice.conf" ]; then
-    # shellcheck disable=SC1091
-    source "/etc/netslice.conf"
-fi
+sudo "$CONTROL" ready || {
+    printf 'netslice-launch: protection unavailable; ask an administrator to inspect Netslice.\n' >&2
+    exit 78
+}
 
 : "${NETSLICE_SLICE:=system-netslice.slice}"
 : "${NETSLICE_PROXY_HOST:=127.0.0.1}"
@@ -133,7 +133,7 @@ if [ "$ROUTING_ONLY" -eq 1 ]; then
     if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
         ENV_ARGS+=("--setenv=DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS")
     fi
-    exec sudo systemd-run "${SYSTEMD_ARGS[@]}" "${ENV_ARGS[@]}" -- "${USER_ARGS[@]}" "$@"
+    exec sudo /usr/bin/systemd-run "${SYSTEMD_ARGS[@]}" "${ENV_ARGS[@]}" -- "$CONTROL" exec -- "${USER_ARGS[@]}" "$@"
 fi
 
 # Bubblewrap refuses to mount directly on /etc/localtime when it is a symlink.
@@ -167,7 +167,7 @@ if [ "$ALLOW_DBUS" -eq 1 ]; then
     )
 fi
 
-exec sudo systemd-run "${SYSTEMD_ARGS[@]}" "${ENV_ARGS[@]}" -- "${USER_ARGS[@]}" \
+exec sudo /usr/bin/systemd-run "${SYSTEMD_ARGS[@]}" "${ENV_ARGS[@]}" -- "$CONTROL" exec -- "${USER_ARGS[@]}" \
     bwrap \
     --dev-bind / / \
     --ro-bind "$NETSLICE_TZ_FILE" "$LOCALTIME_TARGET" \
